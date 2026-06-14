@@ -24,7 +24,8 @@ const START_D = 0.4;
 
 const G = 9.8;
 const DRAG = 0.15; // linear air damping
-const WIND_ACC = 0.62; // lateral accel per wind level
+const MAX_WIND_ACC = 1.86; // lateral accel at the strongest wind (m/s^2)
+const MAX_WIND_KMH = 40; // wind speed (km/h) mapped to MAX_WIND_ACC
 const WALLZ = 18; // back wall depth (matches the visible wall)
 
 const E_RIM = 0.26; // restitution: low rim bounce → near-misses rattle IN
@@ -36,10 +37,6 @@ const SLEEP = 0.55; // speed below which the ball is "at rest"
 const LAUNCH_Z = 6.2; // forward velocity at power 1
 const LAUNCH_Y = 7.6; // upward velocity at power 1
 const VX_MAX = 1.7; // lateral velocity from a full sideways swipe
-
-const MAGNUS_K = 0.22; // sidespin → curve strength (Magnus force)
-const SPIN_DECAY = 0.3; // how fast spin bleeds off in flight
-const CURVE_GAIN = 3.5; // swipe "bow" ratio → spin amount
 
 const MAKES_NEEDED = 3; // makes to advance a level
 const PH = 1 / 240; // fixed physics substep
@@ -467,14 +464,15 @@ let best = Number(localStorage.getItem("paperflick-best") || "0");
 
 let canZ = 6;
 let canR = 0.4;
-let windMax = 0;
-let windDir = 0;
-let windLevel = 0;
+let windMax = 0; // wind tier for the level (0..3)
+let windDir = 0; // -1 left, +1 right, 0 calm
+let windKmh = 0; // this round's wind speed (km/h)
+let windAccel = 0; // signed lateral acceleration applied in flight
+let windUnit = localStorage.getItem("paperflick-windunit") === "mph" ? "mph" : "kmh";
 
 const pos = { x: 0, y: START_Y, d: START_D };
 const vel = { x: 0, y: 0, d: 0 };
 const spin = new THREE.Vector3(); // visual tumble (rad/s)
-let spinCurve = 0; // sidespin that curves the flight (-1..1)
 let resolved = false;
 let flightT = 0;
 let resultTimer = 0;
@@ -508,15 +506,26 @@ muteBtn.addEventListener("click", () => {
   muteBtn.textContent = SFX.muted ? "🔇" : "🔊";
 });
 
+// Tap the wind readout to switch units (km/h ⇄ mph).
+elWind.style.pointerEvents = "auto";
+elWind.addEventListener("click", () => {
+  windUnit = windUnit === "kmh" ? "mph" : "kmh";
+  localStorage.setItem("paperflick-windunit", windUnit);
+  updateHud();
+});
+
 function updateHud() {
   elScore.textContent = `Score ${score}`;
   elSub.textContent = `Level ${level} · ${makes}/${MAKES_NEEDED} to next · Best ${best}`;
-  if (windLevel === 0) {
-    elWind.textContent = "Wind: calm";
+  if (windKmh === 0) {
+    elWind.textContent = "🍃 Calm";
     elWind.className = "pill calm";
   } else {
-    elWind.textContent = `Wind ${windDir < 0 ? "←" : "→"} ${"•".repeat(windLevel)}`;
-    elWind.className = "pill windy";
+    const val = windUnit === "mph" ? Math.round(windKmh * 0.621) : windKmh;
+    const unit = windUnit === "mph" ? "mph" : "km/h";
+    const arrow = windDir < 0 ? "←" : "→";
+    elWind.textContent = `${arrow} ${val} ${unit} · ${windDesc(windKmh)}`;
+    elWind.className = `pill ${windKmh >= 28 ? "strong" : "windy"}`;
   }
 }
 function showResult(text: string, good: boolean) {
@@ -537,20 +546,30 @@ function applyLevel() {
   canAnchor.position.z = -canZ;
 }
 function newWind() {
-  windLevel = windMax === 0 ? 0 : Math.floor(Math.random() * (windMax + 1));
-  windDir = windLevel === 0 ? 0 : Math.random() < 0.5 ? -1 : 1;
-  fan.group.visible = windLevel > 0;
-  if (windLevel > 0) {
+  const maxKmh = (windMax / 3) * MAX_WIND_KMH;
+  windKmh = maxKmh <= 0 ? 0 : Math.round(Math.random() * maxKmh);
+  windDir = windKmh < 2 ? 0 : Math.random() < 0.5 ? -1 : 1;
+  if (windDir === 0) windKmh = 0;
+  windAccel = windDir * (windKmh / MAX_WIND_KMH) * MAX_WIND_ACC;
+  fan.group.visible = windKmh > 0;
+  if (windKmh > 0) {
     fan.group.position.set(-windDir * 4.4, 0, -Math.min(canZ - 1.5, 5));
     fan.head.rotation.y = windDir > 0 ? Math.PI / 2 : -Math.PI / 2;
   }
+}
+
+function windDesc(k: number) {
+  if (k < 8) return "Light";
+  if (k < 16) return "Breezy";
+  if (k < 26) return "Windy";
+  if (k < 34) return "Blustery";
+  return "Gale";
 }
 function resetBall() {
   pos.x = 0;
   pos.y = START_Y;
   pos.d = START_D;
   vel.x = vel.y = vel.d = 0;
-  spinCurve = 0;
   resolved = false;
   flightT = 0;
   acc = 0;
@@ -580,50 +599,24 @@ updateHud();
 let dragging = false;
 let startPos = { x: 0, y: 0 };
 let startTime = 0;
-const path: { x: number; y: number }[] = []; // swipe trail, for curve/spin
 canvas.addEventListener("pointerdown", (e) => {
   SFX.resume(); // unlock audio on first user gesture
   if (phase !== "aim") return;
   dragging = true;
   startPos = { x: e.clientX, y: e.clientY };
   startTime = performance.now();
-  path.length = 0;
-  path.push({ x: e.clientX, y: e.clientY });
   canvas.setPointerCapture(e.pointerId);
-});
-canvas.addEventListener("pointermove", (e) => {
-  if (!dragging) return;
-  path.push({ x: e.clientX, y: e.clientY });
-  if (path.length > 80) path.shift();
 });
 canvas.addEventListener("pointerup", (e) => {
   if (!dragging) return;
   dragging = false;
-  const dx = e.clientX - startPos.x;
-  const dy = e.clientY - startPos.y;
-  flick(dx, dy, Math.max(performance.now() - startTime, 1), curveOf(dx, dy));
+  flick(e.clientX - startPos.x, e.clientY - startPos.y, Math.max(performance.now() - startTime, 1));
 });
 canvas.addEventListener("pointercancel", () => {
   dragging = false;
 });
 
-// Signed "bow" of the swipe path away from the straight start→end line,
-// normalised to a spin amount. A straight swipe → 0; a banana swipe → ±1.
-function curveOf(dx: number, dy: number): number {
-  const len = Math.hypot(dx, dy);
-  if (len < 1 || path.length < 3) return 0;
-  const px = -dy / len; // perpendicular to the straight line
-  const py = dx / len;
-  const s = path[0];
-  let bow = 0;
-  for (let i = 1; i < path.length - 1; i++) {
-    const d = (path[i].x - s.x) * px + (path[i].y - s.y) * py;
-    if (Math.abs(d) > Math.abs(bow)) bow = d;
-  }
-  return clamp((bow / len) * CURVE_GAIN, -1, 1);
-}
-
-function flick(dx: number, dy: number, dtMs: number, curve: number) {
+function flick(dx: number, dy: number, dtMs: number) {
   const H = window.innerHeight;
   const up = -dy;
   if (up < H * 0.06) return;
@@ -633,9 +626,7 @@ function flick(dx: number, dy: number, dtMs: number, curve: number) {
   vel.d = power * LAUNCH_Z;
   vel.y = power * LAUNCH_Y;
   vel.x = clamp(dx / (window.innerWidth * 0.5), -1, 1) * VX_MAX;
-  spinCurve = curve;
-  // Visual tumble; the vertical component reflects the sidespin so the curve reads.
-  spin.set((Math.random() - 0.5) * 12, curve * 16 + (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 12);
+  spin.set((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 18);
   SFX.whoosh(power);
   phase = "flight";
   elHint.style.display = "none";
@@ -681,15 +672,7 @@ function physStep(h: number) {
   vel.x *= damp;
   vel.y *= damp;
   vel.d *= damp;
-  vel.x += windDir * windLevel * WIND_ACC * h;
-  // Magnus: sidespin curves the flight sideways (∝ forward speed).
-  if (spinCurve !== 0) {
-    const mx = MAGNUS_K * spinCurve * vel.d;
-    const md = -MAGNUS_K * spinCurve * vel.x;
-    vel.x += mx * h;
-    vel.d += md * h;
-    spinCurve *= Math.exp(-SPIN_DECAY * h);
-  }
+  vel.x += windAccel * h;
   pos.x += vel.x * h;
   pos.y += vel.y * h;
   pos.d += vel.d * h;
@@ -777,7 +760,7 @@ function physStep(h: number) {
 // ---- Step / loop ---------------------------------------------------
 function step(dt: number) {
   time += dt;
-  if (windLevel > 0) fan.blades.rotation.z += dt * (5 + windLevel * 2.5);
+  if (windKmh > 0) fan.blades.rotation.z += dt * (3 + windKmh * 0.45);
   updateConfetti(dt);
 
   if (phase === "aim") {

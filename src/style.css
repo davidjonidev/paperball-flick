@@ -93,11 +93,17 @@ body {
   text-align: right;
   white-space: nowrap;
 }
+#wind {
+  cursor: pointer;
+}
 #wind.calm {
   color: #aef0c0;
 }
 #wind.windy {
   color: #ffd0c4;
+}
+#wind.strong {
+  color: #ff9b8a;
 }
 
 #substat {
