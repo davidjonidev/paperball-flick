@@ -44,10 +44,11 @@ const PH = 1 / 240; // fixed physics substep
 type Phase = "aim" | "flight" | "result";
 
 // Difficulty presets (validated reachable & wind-beatable in simulation).
+// Wind is driven by difficulty (floor + baseline), so Hard is windy from L1.
 const DIFF = {
-  easy: { distStart: 5.6, distStep: 0.45, distCap: 8.5, canR0: 0.46, canRStep: 0.02, canRMin: 0.34, windCap: 2 },
-  normal: { distStart: 6.0, distStep: 0.55, distCap: 9.85, canR0: 0.4, canRStep: 0.02, canRMin: 0.26, windCap: 3 },
-  hard: { distStart: 6.4, distStep: 0.65, distCap: 11.0, canR0: 0.34, canRStep: 0.02, canRMin: 0.22, windCap: 3 },
+  easy: { distStart: 5.6, distStep: 0.45, distCap: 8.5, canR0: 0.46, canRStep: 0.02, canRMin: 0.34, windStart: 0, windStep: 4, windCapKmh: 22, windFloor: 0.0 },
+  normal: { distStart: 6.0, distStep: 0.55, distCap: 9.85, canR0: 0.4, canRStep: 0.02, canRMin: 0.26, windStart: 8, windStep: 5, windCapKmh: 38, windFloor: 0.25 },
+  hard: { distStart: 6.4, distStep: 0.65, distCap: 11.0, canR0: 0.34, canRStep: 0.02, canRMin: 0.22, windStart: 22, windStep: 5, windCapKmh: 40, windFloor: 0.55 },
 };
 type DiffKey = keyof typeof DIFF;
 let diffKey: DiffKey = (localStorage.getItem("paperflick-diff") as DiffKey) || "normal";
@@ -61,7 +62,8 @@ function levelConfig(level: number) {
   return {
     canZ: Math.min(D.distStart + (level - 1) * D.distStep, D.distCap),
     canR: Math.max(D.canR0 - (level - 1) * D.canRStep, D.canRMin),
-    windMax: level <= 1 ? 0 : Math.min(level - 1, D.windCap),
+    windMaxKmh: Math.min(D.windStart + (level - 1) * D.windStep, D.windCapKmh),
+    windFloor: D.windFloor,
   };
 }
 
@@ -478,7 +480,8 @@ let best = Number(localStorage.getItem("paperflick-best") || "0");
 
 let canZ = 6;
 let canR = 0.4;
-let windMax = 0; // wind tier for the level (0..3)
+let windMaxKmh = 0; // max wind (km/h) for the current level
+let windFloor = 0; // minimum fraction of that max (difficulty baseline)
 let windDir = 0; // -1 left, +1 right, 0 calm
 let windKmh = 0; // this round's wind speed (km/h)
 let windAccel = 0; // signed lateral acceleration applied in flight
@@ -607,14 +610,15 @@ function applyLevel() {
   const cfg = levelConfig(level);
   canZ = cfg.canZ;
   canR = cfg.canR;
-  windMax = cfg.windMax;
+  windMaxKmh = cfg.windMaxKmh;
+  windFloor = cfg.windFloor;
   canGroup.position.z = -canZ;
   canGroup.scale.set(canR / BASE_R, 1, canR / BASE_R);
   canAnchor.position.z = -canZ;
 }
 function newWind() {
-  const maxKmh = (windMax / 3) * MAX_WIND_KMH;
-  windKmh = maxKmh <= 0 ? 0 : Math.round(Math.random() * maxKmh);
+  const lo = windFloor * windMaxKmh;
+  windKmh = windMaxKmh <= 0 ? 0 : Math.round(lo + (windMaxKmh - lo) * Math.random());
   windDir = windKmh < 2 ? 0 : Math.random() < 0.5 ? -1 : 1;
   if (windDir === 0) windKmh = 0;
   windAccel = windDir * (windKmh / MAX_WIND_KMH) * MAX_WIND_ACC;
