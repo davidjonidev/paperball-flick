@@ -50,6 +50,95 @@ function levelConfig(level: number) {
   };
 }
 
+// ---- Sound (Web Audio, fully synthesized — no asset files) ---------
+const SFX = {
+  ctx: null as AudioContext | null,
+  master: null as GainNode | null,
+  noise: null as AudioBuffer | null,
+  muted: localStorage.getItem("paperflick-muted") === "1",
+  lastBounce: 0,
+  ensure() {
+    if (this.ctx) return;
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = this.muted ? 0 : 0.9;
+    this.master.connect(this.ctx.destination);
+    const len = Math.floor(this.ctx.sampleRate * 0.5);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    this.noise = buf;
+  },
+  resume() {
+    this.ensure();
+    if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+  },
+  setMuted(m: boolean) {
+    this.muted = m;
+    localStorage.setItem("paperflick-muted", m ? "1" : "0");
+    if (this.master) this.master.gain.value = m ? 0 : 0.9;
+  },
+  tone(freq: number, dur: number, type: OscillatorType = "sine", gain = 0.3, slideTo?: number) {
+    if (!this.ctx || !this.master) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  },
+  noiseBurst(dur: number, freq: number, q: number, gain = 0.3, slideTo?: number) {
+    if (!this.ctx || !this.master || !this.noise) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(freq, t);
+    bp.Q.value = q;
+    if (slideTo) bp.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + dur + 0.02);
+  },
+  whoosh(power: number) {
+    this.noiseBurst(0.22, 500, 1.2, 0.16 * Math.max(0.5, Math.min(1.4, power)), 1500);
+  },
+  bounce(strength: number) {
+    const now = performance.now();
+    if (now - this.lastBounce < 45) return; // throttle rapid contacts
+    this.lastBounce = now;
+    const s = Math.max(0, Math.min(1, strength));
+    this.tone(180 + s * 280, 0.085, "triangle", 0.1 + 0.16 * s, (180 + s * 280) * 0.7);
+  },
+  swishIn() {
+    this.noiseBurst(0.3, 900, 2.6, 0.22, 2800);
+  },
+  score() {
+    [523, 659, 784].forEach((f, i) => setTimeout(() => this.tone(f, 0.18, "sine", 0.2), i * 70));
+  },
+  miss() {
+    this.tone(130, 0.22, "sine", 0.22, 75);
+    this.noiseBurst(0.12, 300, 0.8, 0.1);
+  },
+  levelup() {
+    [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.tone(f, 0.2, "triangle", 0.2), i * 95));
+  },
+};
+
 // ---- Renderer ------------------------------------------------------
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -392,6 +481,27 @@ const elSub = document.getElementById("substat")!;
 const elWind = document.getElementById("wind")!;
 const elHint = document.getElementById("hint")!;
 const elResult = document.getElementById("result")!;
+const elFps = document.getElementById("fps")!;
+const muteBtn = document.getElementById("muteBtn") as HTMLButtonElement;
+const fpsBtn = document.getElementById("fpsBtn") as HTMLButtonElement;
+
+let showFps = localStorage.getItem("paperflick-fps") === "1";
+elFps.classList.toggle("hidden", !showFps);
+fpsBtn.classList.toggle("active", showFps);
+fpsBtn.addEventListener("click", () => {
+  showFps = !showFps;
+  localStorage.setItem("paperflick-fps", showFps ? "1" : "0");
+  elFps.classList.toggle("hidden", !showFps);
+  fpsBtn.classList.toggle("active", showFps);
+});
+
+muteBtn.textContent = SFX.muted ? "🔇" : "🔊";
+muteBtn.addEventListener("click", () => {
+  SFX.resume();
+  SFX.setMuted(!SFX.muted);
+  muteBtn.textContent = SFX.muted ? "🔇" : "🔊";
+});
+
 function updateHud() {
   elScore.textContent = `Score ${score}`;
   elSub.textContent = `Level ${level} · ${makes}/${MAKES_NEEDED} to next · Best ${best}`;
@@ -464,6 +574,7 @@ let dragging = false;
 let startPos = { x: 0, y: 0 };
 let startTime = 0;
 canvas.addEventListener("pointerdown", (e) => {
+  SFX.resume(); // unlock audio on first user gesture
   if (phase !== "aim") return;
   dragging = true;
   startPos = { x: e.clientX, y: e.clientY };
@@ -489,6 +600,7 @@ function flick(dx: number, dy: number, dtMs: number) {
   vel.y = power * LAUNCH_Y;
   vel.x = clamp(dx / (window.innerWidth * 0.5), -1, 1) * VX_MAX;
   spin.set((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 18);
+  SFX.whoosh(power);
   phase = "flight";
   elHint.style.display = "none";
 }
@@ -515,9 +627,13 @@ function resolve(good: boolean) {
       leveled = true;
     }
     showResult(leveled ? `Level ${level}!` : pick(["Swish!", "In!", "Nothing but net!", "Bullseye!"]), true);
+    SFX.swishIn();
+    SFX.score();
+    if (leveled) setTimeout(() => SFX.levelup(), 360);
   } else {
     streak = 0;
     showResult(pick(["Missed!", "So close!", "Air ball!", "Argh!"]), false);
+    SFX.miss();
   }
   updateHud();
 }
@@ -558,6 +674,7 @@ function physStep(h: number) {
         vel.x -= (1 + E_RIM) * vn * nx;
         vel.y -= (1 + E_RIM) * vn * ny;
         vel.d -= (1 + E_RIM) * vn * nz;
+        SFX.bounce(Math.min(1, -vn / 4)); // metallic rim clink
       }
       const pen = BALL_R - dist;
       pos.x += nx * pen;
@@ -586,6 +703,7 @@ function physStep(h: number) {
     if ((outside && vn < 0) || (!outside && vn > 0)) {
       vel.x -= (1 + E_WALL) * vn * nxh;
       vel.d -= (1 + E_WALL) * vn * nzh;
+      SFX.bounce(Math.min(1, Math.abs(vn) / 4));
     }
   }
 
@@ -598,7 +716,10 @@ function physStep(h: number) {
   // Floor.
   if (pos.y <= BALL_R) {
     pos.y = BALL_R;
-    if (vel.y < 0) vel.y = -vel.y * E_FLOOR;
+    if (vel.y < 0) {
+      if (-vel.y > 1.1) SFX.bounce(Math.min(0.7, -vel.y / 6)); // soft floor thud
+      vel.y = -vel.y * E_FLOOR;
+    }
     vel.x *= FRIC;
     vel.d *= FRIC;
     if (Math.hypot(vel.x, vel.y, vel.d) < SLEEP && !resolved) resolve(false);
@@ -648,9 +769,23 @@ window.addEventListener("resize", resize);
 resize();
 
 let last = performance.now();
+let fpsEMA = 60;
+let fpsPeak = 60;
+let fpsLastShown = 0;
 function loop(now: number) {
   const dt = Math.min((now - last) / 1000, 0.033);
   last = now;
+
+  if (showFps && dt > 0) {
+    const inst = Math.min(1 / dt, 240); // ignore sub-ms stray frames
+
+    fpsEMA += (inst - fpsEMA) * 0.1;
+    fpsPeak = Math.max(fpsPeak, inst);
+    if (now - fpsLastShown > 250) {
+      fpsLastShown = now;
+      elFps.textContent = `${Math.round(fpsEMA)} fps · peak ${Math.round(fpsPeak)}`;
+    }
+  }
 
   step(dt);
   if (phase === "result") {
