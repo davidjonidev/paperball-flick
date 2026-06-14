@@ -34,6 +34,31 @@
         <div id="controls">
           <button id="fpsBtn" class="ctrl" aria-label="Toggle FPS counter">FPS</button>
           <button id="muteBtn" class="ctrl" aria-label="Toggle sound">🔊</button>
+          <button id="pauseBtn" class="ctrl" aria-label="Pause">⏸</button>
+        </div>
+      </div>
+
+      <div id="menu" class="overlay">
+        <div class="card">
+          <h1>Paper&nbsp;Flick</h1>
+          <p class="tag">Swipe up to toss the paper ball in the bin — mind the wind!</p>
+          <div class="seglabel">Difficulty</div>
+          <div class="seg" id="diffSeg">
+            <button data-diff="easy">Easy</button>
+            <button data-diff="normal">Normal</button>
+            <button data-diff="hard">Hard</button>
+          </div>
+          <button id="playBtn" class="primary">Play</button>
+          <p class="best" id="menuBest">Best 0</p>
+        </div>
+      </div>
+
+      <div id="pause" class="overlay hidden">
+        <div class="card">
+          <h2>Paused</h2>
+          <button id="resumeBtn" class="primary">Resume</button>
+          <button id="restartBtn">Restart level run</button>
+          <button id="menuBtn">Main menu</button>
         </div>
       </div>
     </div>

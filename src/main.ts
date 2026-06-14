@@ -43,11 +43,25 @@ const PH = 1 / 240; // fixed physics substep
 
 type Phase = "aim" | "flight" | "result";
 
+// Difficulty presets (validated reachable & wind-beatable in simulation).
+const DIFF = {
+  easy: { distStart: 5.6, distStep: 0.45, distCap: 8.5, canR0: 0.46, canRStep: 0.02, canRMin: 0.34, windCap: 2 },
+  normal: { distStart: 6.0, distStep: 0.55, distCap: 9.85, canR0: 0.4, canRStep: 0.02, canRMin: 0.26, windCap: 3 },
+  hard: { distStart: 6.4, distStep: 0.65, distCap: 11.0, canR0: 0.34, canRStep: 0.02, canRMin: 0.22, windCap: 3 },
+};
+type DiffKey = keyof typeof DIFF;
+let diffKey: DiffKey = (localStorage.getItem("paperflick-diff") as DiffKey) || "normal";
+if (!DIFF[diffKey]) diffKey = "normal";
+
+type Mode = "menu" | "playing" | "paused";
+let mode: Mode = "menu";
+
 function levelConfig(level: number) {
+  const D = DIFF[diffKey];
   return {
-    canZ: Math.min(6.0 + (level - 1) * 0.55, 9.85),
-    canR: Math.max(0.4 - (level - 1) * 0.02, 0.26),
-    windMax: level <= 1 ? 0 : Math.min(level - 1, 3),
+    canZ: Math.min(D.distStart + (level - 1) * D.distStep, D.distCap),
+    canR: Math.max(D.canR0 - (level - 1) * D.canRStep, D.canRMin),
+    windMax: level <= 1 ? 0 : Math.min(level - 1, D.windCap),
   };
 }
 
@@ -514,6 +528,59 @@ elWind.addEventListener("click", () => {
   updateHud();
 });
 
+// ---- Menus (start / pause) + difficulty ----------------------------
+const menuEl = document.getElementById("menu")!;
+const pauseEl = document.getElementById("pause")!;
+const menuBest = document.getElementById("menuBest")!;
+const diffBtns = Array.from(document.querySelectorAll<HTMLButtonElement>("#diffSeg button"));
+
+function updateDiffUI() {
+  diffBtns.forEach((b) => b.classList.toggle("active", b.dataset.diff === diffKey));
+}
+diffBtns.forEach((b) =>
+  b.addEventListener("click", () => {
+    diffKey = b.dataset.diff as DiffKey;
+    localStorage.setItem("paperflick-diff", diffKey);
+    updateDiffUI();
+  }),
+);
+
+function setMode(m: Mode) {
+  mode = m;
+  document.body.dataset.mode = m;
+  menuEl.classList.toggle("hidden", m !== "menu");
+  pauseEl.classList.toggle("hidden", m !== "paused");
+}
+
+function startGame() {
+  level = 1;
+  makes = 0;
+  score = 0;
+  streak = 0;
+  applyLevel();
+  newWind();
+  resetBall();
+  syncBall();
+  updateHud();
+  last = performance.now();
+  setMode("playing");
+}
+
+document.getElementById("playBtn")!.addEventListener("click", startGame);
+document.getElementById("pauseBtn")!.addEventListener("click", () => {
+  if (mode === "playing") setMode("paused");
+});
+document.getElementById("resumeBtn")!.addEventListener("click", () => {
+  last = performance.now();
+  setMode("playing");
+});
+document.getElementById("restartBtn")!.addEventListener("click", startGame);
+document.getElementById("menuBtn")!.addEventListener("click", () => {
+  menuBest.textContent = `Best ${best}`;
+  updateDiffUI();
+  setMode("menu");
+});
+
 function updateHud() {
   elScore.textContent = `Score ${score}`;
   elSub.textContent = `Level ${level} · ${makes}/${MAKES_NEEDED} to next · Best ${best}`;
@@ -594,6 +661,9 @@ newWind();
 resetBall();
 syncBall();
 updateHud();
+updateDiffUI();
+menuBest.textContent = `Best ${best}`;
+setMode("menu");
 
 // ---- Input ---------------------------------------------------------
 let dragging = false;
@@ -601,7 +671,7 @@ let startPos = { x: 0, y: 0 };
 let startTime = 0;
 canvas.addEventListener("pointerdown", (e) => {
   SFX.resume(); // unlock audio on first user gesture
-  if (phase !== "aim") return;
+  if (mode !== "playing" || phase !== "aim") return;
   dragging = true;
   startPos = { x: e.clientX, y: e.clientY };
   startTime = performance.now();
@@ -816,10 +886,12 @@ function loop(now: number) {
     }
   }
 
-  step(dt);
-  if (phase === "result") {
-    resultTimer -= dt;
-    if (resultTimer <= 0) newRound();
+  if (mode === "playing") {
+    step(dt);
+    if (phase === "result") {
+      resultTimer -= dt;
+      if (resultTimer <= 0) newRound();
+    }
   }
 
   camera.position.x = CAM_BASE.x + Math.sin(time * 0.35) * 0.06;
