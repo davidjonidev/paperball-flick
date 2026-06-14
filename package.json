@@ -1,0 +1,17 @@
+{
+  "name": "paperball-flick",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Paper Toss-style flick game — swipe up to land the paper ball in the trash. Web/PWA, deployable to GitHub Pages.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "gen:icons": "node scripts/generate-icons.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}

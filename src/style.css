@@ -1,0 +1,42 @@
+:root {
+  color-scheme: light;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: #0f1115;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  /* Prevent the browser from hijacking the swipe gesture. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+#app {
+  display: grid;
+  place-items: center;
+}
+
+#game {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Respect iPhone safe areas when launched as a PWA. */
+  touch-action: none;
+}
