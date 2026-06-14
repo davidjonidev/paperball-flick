@@ -40,47 +40,73 @@ body {
   touch-action: none;
 }
 
+/* Cinematic vignette over the 3D scene. */
+#app::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 90% at 50% 38%,
+    rgba(0, 0, 0, 0) 55%,
+    rgba(10, 14, 22, 0.34) 100%
+  );
+}
+
 /* ---- HUD overlay (pointer-transparent so swipes reach the canvas) ---- */
 #ui {
   position: absolute;
   inset: 0;
+  z-index: 2;
   pointer-events: none;
-  /* Respect iPhone safe areas in standalone PWA mode. */
   padding: calc(env(safe-area-inset-top) + 16px) 18px
     calc(env(safe-area-inset-bottom) + 16px) 18px;
   color: #f4f7fb;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 
 #hud-top {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 10px;
+}
+
+.pill {
+  background: rgba(18, 26, 38, 0.42);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 8px 16px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
 }
 
 #score {
-  font-size: clamp(20px, 5vw, 34px);
+  font-size: clamp(19px, 4.8vw, 32px);
   font-weight: 800;
   letter-spacing: 0.3px;
 }
 
 #wind {
-  font-size: clamp(14px, 3.4vw, 20px);
+  font-size: clamp(13px, 3.2vw, 19px);
   font-weight: 700;
   text-align: right;
+  white-space: nowrap;
 }
 #wind.calm {
-  color: #b6f0c2;
+  color: #aef0c0;
 }
 #wind.windy {
   color: #ffd0c4;
 }
 
 #substat {
-  margin-top: 6px;
+  margin-top: 10px;
+  margin-left: 6px;
   font-size: clamp(12px, 3vw, 16px);
   font-weight: 600;
-  opacity: 0.85;
+  opacity: 0.92;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
 #hint {
@@ -91,17 +117,18 @@ body {
   text-align: center;
   font-size: clamp(16px, 4.2vw, 24px);
   font-weight: 700;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
   animation: pulse 1.4s ease-in-out infinite;
 }
 @keyframes pulse {
   0%,
   100% {
-    opacity: 0.45;
+    opacity: 0.5;
     transform: translateY(0);
   }
   50% {
     opacity: 1;
-    transform: translateY(-6px);
+    transform: translateY(-7px);
   }
 }
 
@@ -109,34 +136,36 @@ body {
   position: absolute;
   left: 0;
   right: 0;
-  top: 28%;
+  top: 26%;
   text-align: center;
-  font-size: clamp(34px, 10vw, 72px);
+  font-size: clamp(36px, 11vw, 78px);
   font-weight: 900;
+  letter-spacing: 0.5px;
   opacity: 0;
   transform: scale(0.8);
+  text-shadow: 0 4px 22px rgba(0, 0, 0, 0.45);
 }
 #result.show {
-  animation: pop 0.9s ease-out forwards;
+  animation: pop 0.95s cubic-bezier(0.18, 0.9, 0.3, 1.2) forwards;
 }
 #result.good {
-  color: #5af08a;
+  color: #6cf59a;
 }
 #result.bad {
-  color: #ff7a6b;
+  color: #ff8273;
 }
 @keyframes pop {
   0% {
     opacity: 0;
-    transform: scale(0.6);
+    transform: scale(0.55) rotate(-4deg);
   }
-  25% {
+  30% {
     opacity: 1;
-    transform: scale(1.08);
+    transform: scale(1.12) rotate(2deg);
   }
   70% {
     opacity: 1;
-    transform: scale(1);
+    transform: scale(1) rotate(0deg);
   }
   100% {
     opacity: 0;
