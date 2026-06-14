@@ -3,8 +3,9 @@
 A Paper Toss–style flick game. Swipe up to toss the crumpled paper ball across
 the room and into the trash can — but mind the wind from the office fan!
 
-Built with **HTML5 Canvas + TypeScript** (no game-engine dependency, ~7 kB JS),
-so it runs on **web, iOS, and Android** from a single codebase.
+Built with **Three.js + TypeScript** as a real 3D scene (camera, lighting,
+shadows, low-poly meshes), so it runs on **web, iOS, and Android** from a single
+codebase.
 
 ## Play
 
@@ -60,8 +61,10 @@ npx cap open android # build/run in Android Studio
 
 ## Tech notes
 
-- Pseudo-3D perspective projection renders the room; the ball scales down as it
-  flies away.
-- Throw physics are a projectile arc with lateral wind acceleration. Scoring is
-  forgiving in depth but tight laterally, so the **wind is the real skill** —
-  matching the feel of the original Paper Toss.
+- Real 3D scene with [Three.js](https://threejs.org/): perspective camera,
+  directional light with soft shadows, low-poly room, an open metal bin, and a
+  crumpled icosahedron paper ball. A spinning fan appears when there's wind.
+- Throw physics are a projectile arc with lateral wind acceleration, applied to
+  the ball's 3D position. Scoring is forgiving in depth but tight laterally, so
+  the **wind is the real skill** — matching the feel of the original Paper Toss.
+  The tuning was validated with an offline physics simulation before shipping.

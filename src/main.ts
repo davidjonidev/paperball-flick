@@ -1,73 +1,191 @@
 import "./style.css";
+import * as THREE from "three";
 
 /* ------------------------------------------------------------------ *
- * Paper Flick — a Paper Toss-style game.
+ * Paper Flick — a Paper Toss-style game in real 3D (Three.js).
  * Swipe up to flick the paper ball across the room and into the trash.
- * Watch the wind! Pure HTML5 Canvas + TypeScript, no dependencies.
+ * Watch the wind! Playable on web, iOS and Android.
+ *
+ * Coordinates: metres, Y up, the room recedes toward -Z. A ball's
+ * "depth" d is its distance into the room; its mesh sits at z = -d.
  * ------------------------------------------------------------------ */
 
-// ---- World / physics constants (tuned for a satisfying arc) --------
+// ---- World / physics constants (tuned & simulation-verified) -------
 const WORLD = {
-  eyeHeight: 1.25, // camera height above floor (m)
-  focal: 3.6, // perspective focal length (world units)
   startX: 0,
   startY: 0.55, // height the ball is held at
-  startZ: 0.35, // distance in front of camera
-  canZ: 7.5, // how far away the trash can sits
+  startD: 0.35, // depth in front of the camera
+  canZ: 7.5, // depth of the trash can
   canRadius: 0.3, // visual radius of the can opening
   canRimHeight: 0.58, // height of the can's mouth
   ballRadius: 0.075,
   gravity: 9.8,
-  // Scoring tolerances: generous in depth (hard to judge, hidden by
-  // perspective) but tight laterally, so the wind is the real challenge.
-  latTol: 0.26, // |x| must be within this of the can centre
-  zTol: 1.0, // depth slack around the can
+  // Scoring: generous in depth (perspective hides it) but tight
+  // laterally, so judging the wind is the real skill.
+  latTol: 0.26,
+  zTol: 1.0,
 };
 
-// A "perfect" throw (power = 1) drops straight into the can; the swipe→power
-// mapping centres a comfortable ~42%-screen flick on power 1.
-const VZ_MAX = 5.11; // forward velocity at full power
+// A "perfect" throw is power = 1; a comfortable ~42%-screen flick maps there.
+const VZ_MAX = 5.11; // forward (depth) velocity at full power
 const VY_MAX = 6.88; // upward (lob) velocity at full power
 const VX_MAX = 1.6; // lateral velocity from a sideways swipe
 const WIND_ACC = 0.62; // lateral acceleration per wind level
 
 type Phase = "aim" | "flight" | "result";
 
-interface Vec3 {
-  x: number;
-  y: number;
-  z: number;
-}
-
+// ---- Renderer / scene ---------------------------------------------
 const canvas = document.getElementById("game") as HTMLCanvasElement;
-const ctx = canvas.getContext("2d")!;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-let W = 0; // CSS pixels
-let H = 0;
-let DPR = 1;
+const scene = new THREE.Scene();
+const SKY = 0xcfd9e6;
+scene.background = new THREE.Color(SKY);
+scene.fog = new THREE.Fog(SKY, 9, 22);
 
-function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 3);
-  W = window.innerWidth;
-  H = window.innerHeight;
-  canvas.width = Math.round(W * DPR);
-  canvas.height = Math.round(H * DPR);
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+const camera = new THREE.PerspectiveCamera(52, 1, 0.1, 100);
+camera.position.set(0, 1.35, 1.2);
+camera.lookAt(0, 0.2, -7.5);
+
+// ---- Lighting ------------------------------------------------------
+scene.add(new THREE.AmbientLight(0xffffff, 0.62));
+const sun = new THREE.DirectionalLight(0xffffff, 0.95);
+sun.position.set(3.5, 8, 3);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 25;
+sun.shadow.camera.left = -6;
+sun.shadow.camera.right = 6;
+sun.shadow.camera.top = 6;
+sun.shadow.camera.bottom = -6;
+sun.shadow.bias = -0.0005;
+sun.target.position.set(0, 0, -6);
+scene.add(sun);
+scene.add(sun.target);
+
+// ---- Room ----------------------------------------------------------
+const floorMat = new THREE.MeshStandardMaterial({
+  color: 0xb98c5e,
+  roughness: 0.96,
+});
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(28, 40), floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const wallMat = new THREE.MeshStandardMaterial({
+  color: 0xd6e0ec,
+  roughness: 1,
+});
+const backWall = new THREE.Mesh(new THREE.PlaneGeometry(28, 14), wallMat);
+backWall.position.set(0, 7, -13);
+backWall.receiveShadow = true;
+scene.add(backWall);
+
+// ---- Trash can -----------------------------------------------------
+const canGroup = new THREE.Group();
+canGroup.position.set(0, 0, -WORLD.canZ);
+scene.add(canGroup);
+
+const metal = new THREE.MeshStandardMaterial({
+  color: 0x5b6470,
+  metalness: 0.25,
+  roughness: 0.55,
+  side: THREE.DoubleSide,
+});
+const canBody = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.3, 0.24, WORLD.canRimHeight, 28, 1, true),
+  metal,
+);
+canBody.position.y = WORLD.canRimHeight / 2;
+canBody.castShadow = true;
+canBody.receiveShadow = true;
+canGroup.add(canBody);
+
+const canInside = new THREE.Mesh(
+  new THREE.CircleGeometry(0.27, 28),
+  new THREE.MeshStandardMaterial({ color: 0x20242b, roughness: 1 }),
+);
+canInside.rotation.x = -Math.PI / 2;
+canInside.position.y = 0.04;
+canGroup.add(canInside);
+
+const rim = new THREE.Mesh(
+  new THREE.TorusGeometry(0.3, 0.022, 10, 28),
+  new THREE.MeshStandardMaterial({ color: 0x79828f, metalness: 0.3, roughness: 0.5 }),
+);
+rim.rotation.x = Math.PI / 2;
+rim.position.y = WORLD.canRimHeight;
+rim.castShadow = true;
+canGroup.add(rim);
+
+// ---- Paper ball (crumpled low-poly) --------------------------------
+function makeBallGeometry() {
+  const geo = new THREE.IcosahedronGeometry(WORLD.ballRadius, 1);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const f = 1 + (Math.random() - 0.5) * 0.22; // crumple
+    v.multiplyScalar(f);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  return geo;
 }
-window.addEventListener("resize", resize);
-resize();
+const ballMesh = new THREE.Mesh(
+  makeBallGeometry(),
+  new THREE.MeshStandardMaterial({ color: 0xeef1f4, roughness: 0.85, flatShading: true }),
+);
+ballMesh.castShadow = true;
+scene.add(ballMesh);
 
-// ---- Perspective projection ---------------------------------------
-// Project a world point to screen-space, returning x/y in CSS px and the
-// perspective scale factor `p` (1 = right at the camera, →0 far away).
-function project(p: Vec3) {
-  const persp = WORLD.focal / (WORLD.focal + p.z);
-  const S = H * 0.62; // world-units → pixels at p = 1
-  const horizonY = H * 0.4;
-  const sx = W / 2 + p.x * persp * S;
-  const sy = horizonY + (WORLD.eyeHeight - p.y) * persp * S;
-  return { sx, sy, persp, S };
+// ---- Fan (wind source) --------------------------------------------
+function buildFan() {
+  const group = new THREE.Group();
+  const dark = new THREE.MeshStandardMaterial({ color: 0x3a4654, roughness: 0.6, metalness: 0.2 });
+  const light = new THREE.MeshStandardMaterial({ color: 0x9aa7b5, roughness: 0.5, metalness: 0.3 });
+
+  // Pole to the floor.
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 1.1, 12), dark);
+  pole.position.y = 0.55;
+  pole.castShadow = true;
+  group.add(pole);
+
+  // Head faces along its local +Z; we aim that at the room centre.
+  const head = new THREE.Group();
+  head.position.y = 1.1;
+  group.add(head);
+
+  const cage = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.05, 8, 24), dark);
+  cage.castShadow = true;
+  head.add(cage);
+
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.12, 16), dark);
+  hub.rotation.x = Math.PI / 2;
+  head.add(hub);
+
+  const blades = new THREE.Group();
+  for (let i = 0; i < 4; i++) {
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.42, 0.02), light);
+    blade.position.y = 0.22;
+    blade.castShadow = true;
+    const pivot = new THREE.Group();
+    pivot.rotation.z = (i / 4) * Math.PI * 2;
+    pivot.add(blade);
+    blades.add(pivot);
+  }
+  head.add(blades);
+
+  group.visible = false;
+  scene.add(group);
+  return { group, head, blades };
 }
+const fan = buildFan();
 
 // ---- Game state ----------------------------------------------------
 let phase: Phase = "aim";
@@ -75,67 +193,94 @@ let score = 0;
 let streak = 0;
 let best = Number(localStorage.getItem("paperflick-best") || "0");
 
-// Wind for the current round.
-let windDir = 0; // -1 (left) .. +1 (right)
+let windDir = 0; // -1 left, +1 right
 let windLevel = 0; // 0..3
 
-// Active ball.
-const ball: Vec3 = { x: WORLD.startX, y: WORLD.startY, z: WORLD.startZ };
-const vel: Vec3 = { x: 0, y: 0, z: 0 };
-let ballSpin = 0;
+const pos = { x: WORLD.startX, y: WORLD.startY, d: WORLD.startD };
+const vel = { x: 0, y: 0, d: 0 };
+const spin = new THREE.Vector3();
 
-// Result overlay.
-let resultText = "";
-let resultGood = false;
 let resultTimer = 0;
-
-// Idle bob.
 let time = 0;
 
+// ---- HUD (DOM overlay) ---------------------------------------------
+const elScore = document.getElementById("score")!;
+const elSub = document.getElementById("substat")!;
+const elWind = document.getElementById("wind")!;
+const elHint = document.getElementById("hint")!;
+const elResult = document.getElementById("result")!;
+
+function updateHud() {
+  elScore.textContent = `Score ${score}`;
+  elSub.textContent = `Streak ${streak} · Best ${best}`;
+  if (windLevel === 0) {
+    elWind.textContent = "Wind: calm";
+    elWind.className = "calm";
+  } else {
+    const arrow = windDir < 0 ? "←" : "→";
+    elWind.textContent = `Wind ${arrow} ${"•".repeat(windLevel)}`;
+    elWind.className = "windy";
+  }
+}
+
+function showResult(text: string, good: boolean) {
+  elResult.textContent = text;
+  elResult.className = "";
+  void elResult.offsetWidth; // restart the CSS animation
+  elResult.classList.add("show", good ? "good" : "bad");
+}
+
+// ---- Round flow ----------------------------------------------------
 function newWind() {
-  windLevel = Math.floor(Math.random() * 4); // 0..3
+  windLevel = Math.floor(Math.random() * 4);
   windDir = windLevel === 0 ? 0 : Math.random() < 0.5 ? -1 : 1;
+  fan.group.visible = windLevel > 0;
+  if (windLevel > 0) {
+    // Fan sits upwind and blows toward windDir.
+    fan.group.position.set(-windDir * 4.2, 0, -4);
+    fan.head.rotation.y = windDir > 0 ? Math.PI / 2 : -Math.PI / 2;
+  }
+  updateHud();
 }
 
 function resetBall() {
-  ball.x = WORLD.startX;
-  ball.y = WORLD.startY;
-  ball.z = WORLD.startZ;
-  vel.x = vel.y = vel.z = 0;
-  ballSpin = 0;
+  pos.x = WORLD.startX;
+  pos.y = WORLD.startY;
+  pos.d = WORLD.startD;
+  vel.x = vel.y = vel.d = 0;
+  ballMesh.visible = true;
+  ballMesh.rotation.set(0, 0, 0);
   phase = "aim";
+  elHint.style.display = "";
+}
+
+function syncBall() {
+  ballMesh.position.set(pos.x, pos.y, -pos.d);
 }
 
 newWind();
+resetBall();
+syncBall();
+updateHud();
 
 // ---- Input (pointer = mouse + touch) ------------------------------
 let dragging = false;
 let startPos = { x: 0, y: 0 };
 let startTime = 0;
-let curPos = { x: 0, y: 0 };
 
 canvas.addEventListener("pointerdown", (e) => {
-  if (phase === "result") return; // wait for auto-advance
   if (phase !== "aim") return;
   dragging = true;
   startPos = { x: e.clientX, y: e.clientY };
-  curPos = { ...startPos };
   startTime = performance.now();
   canvas.setPointerCapture(e.pointerId);
-});
-
-canvas.addEventListener("pointermove", (e) => {
-  if (!dragging) return;
-  curPos = { x: e.clientX, y: e.clientY };
 });
 
 canvas.addEventListener("pointerup", (e) => {
   if (!dragging) return;
   dragging = false;
   const dt = Math.max(performance.now() - startTime, 1);
-  const dx = e.clientX - startPos.x;
-  const dy = e.clientY - startPos.y; // up is negative
-  flick(dx, dy, dt);
+  flick(e.clientX - startPos.x, e.clientY - startPos.y, dt);
 });
 
 canvas.addEventListener("pointercancel", () => {
@@ -143,362 +288,97 @@ canvas.addEventListener("pointercancel", () => {
 });
 
 function flick(dx: number, dy: number, dtMs: number) {
+  const H = window.innerHeight;
   const up = -dy; // upward swipe distance (px)
   if (up < H * 0.06) return; // ignore taps / downward flicks
 
-  const len = Math.hypot(dx, dy);
-  const speed = len / dtMs; // px per ms
+  const speed = Math.hypot(dx, dy) / dtMs; // px per ms
   if (speed < 0.25) return; // must be a flick, not a slow drag
 
-  // Power is distance-driven and forgiving: a ~42%-screen flick is perfect,
-  // and roughly a 30%–54% flick still scores in calm wind.
+  // Distance-driven, forgiving: a ~42%-screen flick is perfect.
   const power = clamp(1.0 + (up / H - 0.42) * 0.54, 0.2, 1.6);
 
-  vel.z = power * VZ_MAX;
+  vel.d = power * VZ_MAX;
   vel.y = power * VY_MAX;
-  vel.x = clamp(dx / (W * 0.5), -1, 1) * VX_MAX;
+  vel.x = clamp(dx / (window.innerWidth * 0.5), -1, 1) * VX_MAX;
+
+  // Random tumble for visual flair.
+  spin.set(
+    (Math.random() - 0.5) * 18,
+    (Math.random() - 0.5) * 8,
+    (Math.random() - 0.5) * 18,
+  );
+
   phase = "flight";
+  elHint.style.display = "none";
 }
 
 // ---- Simulation ----------------------------------------------------
-let scored = false;
-
 function step(dt: number) {
   time += dt;
+
+  if (windLevel > 0) fan.blades.rotation.z += dt * (5 + windLevel * 2.5);
+
+  if (phase === "aim") {
+    pos.y = WORLD.startY + Math.sin(time * 2) * 0.012; // gentle bob
+    syncBall();
+    return;
+  }
+
   if (phase !== "flight") return;
 
-  const prevZ = ball.z;
-  const prevY = ball.y;
-  const prevX = ball.x;
+  const prevY = pos.y;
+  const prevX = pos.x;
+  const prevD = pos.d;
 
-  // Wind pushes laterally throughout the flight.
   vel.x += windDir * windLevel * WIND_ACC * dt;
   vel.y -= WORLD.gravity * dt;
+  pos.x += vel.x * dt;
+  pos.y += vel.y * dt;
+  pos.d += vel.d * dt;
 
-  ball.x += vel.x * dt;
-  ball.y += vel.y * dt;
-  ball.z += vel.z * dt;
-  ballSpin += dt * 12;
+  ballMesh.rotation.x += spin.x * dt;
+  ballMesh.rotation.y += spin.y * dt;
+  ballMesh.rotation.z += spin.z * dt;
+  syncBall();
 
-  // As the ball descends through the rim height, check if it's over the can
-  // mouth — this is the natural "drops into the cup" test.
-  if (vel.y < 0 && prevY > WORLD.canRimHeight && ball.y <= WORLD.canRimHeight) {
-    const t = (prevY - WORLD.canRimHeight) / (prevY - ball.y);
-    const xc = prevX + (ball.x - prevX) * t;
-    const zc = prevZ + (ball.z - prevZ) * t;
-    const overMouth =
-      Math.abs(xc) <= WORLD.latTol && Math.abs(zc - WORLD.canZ) <= WORLD.zTol;
-    if (overMouth) {
+  // Descending through the rim height → check if over the mouth.
+  if (vel.y < 0 && prevY > WORLD.canRimHeight && pos.y <= WORLD.canRimHeight) {
+    const t = (prevY - WORLD.canRimHeight) / (prevY - pos.y);
+    const xc = prevX + (pos.x - prevX) * t;
+    const dc = prevD + (pos.d - prevD) * t;
+    if (Math.abs(xc) <= WORLD.latTol && Math.abs(dc - WORLD.canZ) <= WORLD.zTol) {
       land(true);
       return;
     }
   }
 
-  // Hit the floor → missed.
-  if (ball.y <= 0) {
-    ball.y = 0;
+  if (pos.y <= 0) {
+    pos.y = WORLD.ballRadius;
+    syncBall();
     land(false);
     return;
   }
-
-  // Flew well past the can without going in → missed.
-  if (ball.z > WORLD.canZ + 3) {
-    land(false);
-  }
+  if (pos.d > WORLD.canZ + 3) land(false);
 }
 
 function land(didScore: boolean) {
-  scored = didScore;
   phase = "result";
-  resultTimer = didScore ? 1.0 : 0.9;
-  resultGood = didScore;
+  resultTimer = 0.95;
   if (didScore) {
+    ballMesh.visible = false; // dropped inside
     streak += 1;
-    score += 1 + Math.floor(streak / 3); // streak bonus
-    resultText = pick(["Swish!", "Nothing but net!", "In!", "Bullseye!"]);
+    score += 1 + Math.floor(streak / 3);
     if (score > best) {
       best = score;
       localStorage.setItem("paperflick-best", String(best));
     }
+    showResult(pick(["Swish!", "In!", "Nothing but net!", "Bullseye!"]), true);
   } else {
     streak = 0;
-    resultText = pick(["Missed!", "So close!", "Air ball!", "Try again"]);
+    showResult(pick(["Missed!", "So close!", "Air ball!", "Argh!"]), false);
   }
-}
-
-function afterResult() {
-  newWind();
-  resetBall();
-}
-
-// ---- Rendering -----------------------------------------------------
-function draw() {
-  // Sky / back wall.
-  const wall = ctx.createLinearGradient(0, 0, 0, H);
-  wall.addColorStop(0, "#dfe7ef");
-  wall.addColorStop(1, "#c2cedd");
-  ctx.fillStyle = wall;
-  ctx.fillRect(0, 0, W, H);
-
-  const horizonY = H * 0.4;
-
-  // Floor.
-  const floor = ctx.createLinearGradient(0, horizonY, 0, H);
-  floor.addColorStop(0, "#b08c63");
-  floor.addColorStop(1, "#8a6a45");
-  ctx.fillStyle = floor;
-  ctx.fillRect(0, horizonY, W, H - horizonY);
-
-  // Floorboard perspective lines.
-  ctx.strokeStyle = "rgba(60,40,20,0.18)";
-  ctx.lineWidth = 1;
-  for (let i = -6; i <= 6; i++) {
-    const a = project({ x: i * 0.7, y: 0, z: 0.2 });
-    const b = project({ x: i * 0.7, y: 0, z: 12 });
-    ctx.beginPath();
-    ctx.moveTo(a.sx, a.sy);
-    ctx.lineTo(b.sx, b.sy);
-    ctx.stroke();
-  }
-
-  drawFan();
-  drawCanBack();
-  drawShadow();
-  drawBall();
-  drawCanFront();
-  drawHUD();
-  drawAimHint();
-  drawResult();
-}
-
-function drawCanBack() {
-  // Trash can drawn as a tapered cylinder. Back half (rim ellipse + body).
-  const rim = project({ x: 0, y: WORLD.canRimHeight, z: WORLD.canZ });
-  const base = project({ x: 0, y: 0, z: WORLD.canZ });
-  const rTop = WORLD.canRadius * rim.persp * rim.S;
-  const rBot = WORLD.canRadius * 0.82 * base.persp * base.S;
-  const ellH = rTop * 0.42;
-
-  // Body.
-  ctx.fillStyle = "#5b6470";
-  ctx.beginPath();
-  ctx.moveTo(rim.sx - rTop, rim.sy);
-  ctx.lineTo(base.sx - rBot, base.sy);
-  ctx.lineTo(base.sx + rBot, base.sy);
-  ctx.lineTo(rim.sx + rTop, rim.sy);
-  ctx.closePath();
-  ctx.fill();
-
-  // Vertical sheen.
-  ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.beginPath();
-  ctx.moveTo(rim.sx - rTop * 0.5, rim.sy);
-  ctx.lineTo(base.sx - rBot * 0.5, base.sy);
-  ctx.lineTo(base.sx - rBot * 0.15, base.sy);
-  ctx.lineTo(rim.sx - rTop * 0.15, rim.sy);
-  ctx.closePath();
-  ctx.fill();
-
-  // Inside of the can (dark) — the opening.
-  ctx.fillStyle = "#23272e";
-  ctx.beginPath();
-  ctx.ellipse(rim.sx, rim.sy, rTop, ellH, 0, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawCanFront() {
-  // Front rim lip drawn over the ball so a scored ball disappears inside.
-  const rim = project({ x: 0, y: WORLD.canRimHeight, z: WORLD.canZ });
-  const rTop = WORLD.canRadius * rim.persp * rim.S;
-  const ellH = rTop * 0.42;
-
-  ctx.lineWidth = Math.max(2, rTop * 0.18);
-  ctx.strokeStyle = "#6b7480";
-  ctx.beginPath();
-  ctx.ellipse(rim.sx, rim.sy, rTop, ellH, 0, 0, Math.PI, false);
-  ctx.stroke();
-}
-
-function drawShadow() {
-  if (phase === "aim") {
-    const s = project({ x: ball.x, y: 0, z: ball.z });
-    const r = WORLD.ballRadius * s.persp * s.S;
-    shadowEllipse(s.sx, s.sy, r * 1.2, r * 0.4, 0.25);
-    return;
-  }
-  const s = project({ x: ball.x, y: 0, z: ball.z });
-  const r = WORLD.ballRadius * s.persp * s.S;
-  const fade = clamp(1 - ball.y / 2.5, 0.05, 0.35);
-  shadowEllipse(s.sx, s.sy, r * (1 + ball.y * 0.2), r * 0.42, fade);
-}
-
-function shadowEllipse(
-  x: number,
-  y: number,
-  rx: number,
-  ry: number,
-  alpha: number,
-) {
-  ctx.fillStyle = `rgba(0,0,0,${alpha})`;
-  ctx.beginPath();
-  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawBall() {
-  // Skip drawing once a scored ball has dropped below the rim (it's "inside").
-  const b = phase === "aim" ? bobbedBall() : ball;
-  const s = project(b);
-  const r = Math.max(2, WORLD.ballRadius * s.persp * s.S);
-
-  if (scored && phase === "result") {
-    return; // dropped inside the can
-  }
-
-  // Crumpled paper ball: white circle with shading + facets.
-  const grad = ctx.createRadialGradient(
-    s.sx - r * 0.35,
-    s.sy - r * 0.35,
-    r * 0.1,
-    s.sx,
-    s.sy,
-    r,
-  );
-  grad.addColorStop(0, "#ffffff");
-  grad.addColorStop(1, "#cdd2d8");
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(s.sx, s.sy, r, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Crumple facets (rotate with spin for a tumbling feel).
-  ctx.save();
-  ctx.translate(s.sx, s.sy);
-  ctx.rotate(ballSpin);
-  ctx.strokeStyle = "rgba(120,130,140,0.5)";
-  ctx.lineWidth = Math.max(0.5, r * 0.05);
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2;
-    ctx.beginPath();
-    ctx.moveTo(Math.cos(a) * r * 0.15, Math.sin(a) * r * 0.15);
-    ctx.lineTo(Math.cos(a + 1.1) * r * 0.85, Math.sin(a + 1.1) * r * 0.85);
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function bobbedBall(): Vec3 {
-  return {
-    x: WORLD.startX,
-    y: WORLD.startY + Math.sin(time * 2) * 0.015,
-    z: WORLD.startZ,
-  };
-}
-
-function drawFan() {
-  // Wind source on the side of the room, like the classic office fan.
-  if (windLevel === 0) return;
-  const side = windDir; // blows in this direction; fan sits upwind
-  const fanX = side > 0 ? W * 0.1 : W * 0.9;
-  const fanY = H * 0.55;
-  const R = Math.min(W, H) * 0.06;
-
-  ctx.save();
-  ctx.translate(fanX, fanY);
-  // Housing.
-  ctx.fillStyle = "#3a4654";
-  ctx.beginPath();
-  ctx.arc(0, 0, R, 0, Math.PI * 2);
-  ctx.fill();
-  // Blades.
-  ctx.rotate(time * (4 + windLevel * 2));
-  ctx.fillStyle = "#9aa7b5";
-  for (let i = 0; i < 3; i++) {
-    ctx.rotate((Math.PI * 2) / 3);
-    ctx.beginPath();
-    ctx.ellipse(R * 0.45, 0, R * 0.5, R * 0.22, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.fillStyle = "#2b333d";
-  ctx.beginPath();
-  ctx.arc(0, 0, R * 0.18, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawHUD() {
-  const pad = Math.max(14, H * 0.02);
-  const top = pad + safeTop();
-
-  ctx.textBaseline = "top";
-  ctx.fillStyle = "#1b2430";
-
-  // Score.
-  ctx.textAlign = "left";
-  ctx.font = `700 ${Math.round(H * 0.04)}px -apple-system, system-ui, sans-serif`;
-  ctx.fillText(`Score ${score}`, pad, top);
-
-  ctx.font = `600 ${Math.round(H * 0.022)}px -apple-system, system-ui, sans-serif`;
-  ctx.fillStyle = "#41506b";
-  ctx.fillText(`Streak ${streak}   ·   Best ${best}`, pad, top + H * 0.045);
-
-  // Wind indicator (top-right).
-  ctx.textAlign = "right";
-  ctx.font = `700 ${Math.round(H * 0.024)}px -apple-system, system-ui, sans-serif`;
-  ctx.fillStyle = windLevel === 0 ? "#3a7d44" : "#b4453a";
-  const label =
-    windLevel === 0
-      ? "Wind: calm"
-      : `Wind ${arrow(windDir)} ${"•".repeat(windLevel)}`;
-  ctx.fillText(label, W - pad, top);
-}
-
-function arrow(dir: number) {
-  return dir < 0 ? "←" : "→";
-}
-
-function drawAimHint() {
-  if (phase !== "aim") return;
-
-  if (dragging) {
-    // Draw the live swipe vector.
-    ctx.strokeStyle = "rgba(43,108,176,0.6)";
-    ctx.lineWidth = 4;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(startPos.x, startPos.y);
-    ctx.lineTo(curPos.x, curPos.y);
-    ctx.stroke();
-    return;
-  }
-
-  // Gentle "swipe up" prompt.
-  const a = 0.5 + 0.5 * Math.sin(time * 3);
-  ctx.fillStyle = `rgba(27,36,48,${0.35 + a * 0.4})`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.font = `700 ${Math.round(H * 0.03)}px -apple-system, system-ui, sans-serif`;
-  ctx.fillText("↑ swipe up to flick", W / 2, H * 0.86);
-}
-
-function drawResult() {
-  if (phase !== "result") return;
-  const a = clamp(resultTimer / 0.5, 0, 1);
-  ctx.globalAlpha = a;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = resultGood ? "#2f8f4e" : "#c0463b";
-  ctx.font = `800 ${Math.round(H * 0.07)}px -apple-system, system-ui, sans-serif`;
-  ctx.fillText(resultText, W / 2, H * 0.32);
-  ctx.globalAlpha = 1;
-}
-
-function safeTop(): number {
-  // Approximate the iOS status-bar inset for PWAs.
-  const v = getComputedStyle(document.documentElement).getPropertyValue(
-    "--sat",
-  );
-  return v ? parseFloat(v) : 0;
+  updateHud();
 }
 
 // ---- Helpers -------------------------------------------------------
@@ -509,6 +389,17 @@ function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+// ---- Resize --------------------------------------------------------
+function resize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+resize();
+
 // ---- Main loop -----------------------------------------------------
 let last = performance.now();
 function loop(now: number) {
@@ -518,10 +409,14 @@ function loop(now: number) {
   step(dt);
   if (phase === "result") {
     resultTimer -= dt;
-    if (resultTimer <= 0) afterResult();
+    if (resultTimer <= 0) {
+      newWind();
+      resetBall();
+      syncBall();
+    }
   }
 
-  draw();
+  renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
