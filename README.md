@@ -19,7 +19,11 @@ codebase.
 - **Swipe up** to flick the ball. A longer flick throws further.
 - Watch the **wind indicator** (top-right) and the spinning **fan**: angle your
   swipe *into* the wind to compensate.
+- The ball is a real rigid body — it can **swish, rattle the rim in, or bounce
+  out**, and ricochet off the floor, the bin, and the back wall.
 - Sink consecutive shots to build a **streak** for bonus points.
+- Sink **3** to advance a **level**: each level pushes the bin farther away,
+  raises the wind, and shrinks the bin.
 
 ## Develop
 
