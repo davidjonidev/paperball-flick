@@ -154,6 +154,7 @@ const maxAniso = renderer.capabilities.getMaxAnisotropy();
 const scene = new THREE.Scene();
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose(); // env map texture is retained; generator is no longer needed
 scene.fog = new THREE.Fog(0xd7e2ee, 14, 32);
 
 const camera = new THREE.PerspectiveCamera(52, 1, 0.1, 100);
@@ -165,7 +166,7 @@ scene.add(new THREE.HemisphereLight(0xbcd6f0, 0x6b5640, 0.55));
 const sun = new THREE.DirectionalLight(0xfff4e2, 1.7);
 sun.position.set(4, 8.5, 3.5);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(1024, 1024);
 sun.shadow.camera.near = 1;
 sun.shadow.camera.far = 30;
 sun.shadow.camera.left = -8;
@@ -649,9 +650,11 @@ function physStep(h: number) {
   pos.x += vel.x * h;
   pos.y += vel.y * h;
   pos.d += vel.d * h;
-  ballMesh.rotation.x += spin.x * h;
-  ballMesh.rotation.y += spin.y * h;
-  ballMesh.rotation.z += spin.z * h;
+  // Tumble in proportion to speed, so a settled ball stops spinning.
+  const rs = Math.min(1, Math.hypot(vel.x, vel.y, vel.d));
+  ballMesh.rotation.x += spin.x * h * rs;
+  ballMesh.rotation.y += spin.y * h * rs;
+  ballMesh.rotation.z += spin.z * h * rs;
 
   let ax = pos.x;
   let az = pos.d - canZ;
