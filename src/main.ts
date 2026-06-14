@@ -37,6 +37,10 @@ const LAUNCH_Z = 6.2; // forward velocity at power 1
 const LAUNCH_Y = 7.6; // upward velocity at power 1
 const VX_MAX = 1.7; // lateral velocity from a full sideways swipe
 
+const MAGNUS_K = 0.22; // sidespin → curve strength (Magnus force)
+const SPIN_DECAY = 0.3; // how fast spin bleeds off in flight
+const CURVE_GAIN = 3.5; // swipe "bow" ratio → spin amount
+
 const MAKES_NEEDED = 3; // makes to advance a level
 const PH = 1 / 240; // fixed physics substep
 
@@ -469,7 +473,8 @@ let windLevel = 0;
 
 const pos = { x: 0, y: START_Y, d: START_D };
 const vel = { x: 0, y: 0, d: 0 };
-const spin = new THREE.Vector3();
+const spin = new THREE.Vector3(); // visual tumble (rad/s)
+let spinCurve = 0; // sidespin that curves the flight (-1..1)
 let resolved = false;
 let flightT = 0;
 let resultTimer = 0;
@@ -545,6 +550,7 @@ function resetBall() {
   pos.y = START_Y;
   pos.d = START_D;
   vel.x = vel.y = vel.d = 0;
+  spinCurve = 0;
   resolved = false;
   flightT = 0;
   acc = 0;
@@ -574,23 +580,50 @@ updateHud();
 let dragging = false;
 let startPos = { x: 0, y: 0 };
 let startTime = 0;
+const path: { x: number; y: number }[] = []; // swipe trail, for curve/spin
 canvas.addEventListener("pointerdown", (e) => {
   SFX.resume(); // unlock audio on first user gesture
   if (phase !== "aim") return;
   dragging = true;
   startPos = { x: e.clientX, y: e.clientY };
   startTime = performance.now();
+  path.length = 0;
+  path.push({ x: e.clientX, y: e.clientY });
   canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  path.push({ x: e.clientX, y: e.clientY });
+  if (path.length > 80) path.shift();
 });
 canvas.addEventListener("pointerup", (e) => {
   if (!dragging) return;
   dragging = false;
-  flick(e.clientX - startPos.x, e.clientY - startPos.y, Math.max(performance.now() - startTime, 1));
+  const dx = e.clientX - startPos.x;
+  const dy = e.clientY - startPos.y;
+  flick(dx, dy, Math.max(performance.now() - startTime, 1), curveOf(dx, dy));
 });
 canvas.addEventListener("pointercancel", () => {
   dragging = false;
 });
-function flick(dx: number, dy: number, dtMs: number) {
+
+// Signed "bow" of the swipe path away from the straight start→end line,
+// normalised to a spin amount. A straight swipe → 0; a banana swipe → ±1.
+function curveOf(dx: number, dy: number): number {
+  const len = Math.hypot(dx, dy);
+  if (len < 1 || path.length < 3) return 0;
+  const px = -dy / len; // perpendicular to the straight line
+  const py = dx / len;
+  const s = path[0];
+  let bow = 0;
+  for (let i = 1; i < path.length - 1; i++) {
+    const d = (path[i].x - s.x) * px + (path[i].y - s.y) * py;
+    if (Math.abs(d) > Math.abs(bow)) bow = d;
+  }
+  return clamp((bow / len) * CURVE_GAIN, -1, 1);
+}
+
+function flick(dx: number, dy: number, dtMs: number, curve: number) {
   const H = window.innerHeight;
   const up = -dy;
   if (up < H * 0.06) return;
@@ -600,7 +633,9 @@ function flick(dx: number, dy: number, dtMs: number) {
   vel.d = power * LAUNCH_Z;
   vel.y = power * LAUNCH_Y;
   vel.x = clamp(dx / (window.innerWidth * 0.5), -1, 1) * VX_MAX;
-  spin.set((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 18);
+  spinCurve = curve;
+  // Visual tumble; the vertical component reflects the sidespin so the curve reads.
+  spin.set((Math.random() - 0.5) * 12, curve * 16 + (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 12);
   SFX.whoosh(power);
   phase = "flight";
   elHint.style.display = "none";
@@ -647,6 +682,14 @@ function physStep(h: number) {
   vel.y *= damp;
   vel.d *= damp;
   vel.x += windDir * windLevel * WIND_ACC * h;
+  // Magnus: sidespin curves the flight sideways (∝ forward speed).
+  if (spinCurve !== 0) {
+    const mx = MAGNUS_K * spinCurve * vel.d;
+    const md = -MAGNUS_K * spinCurve * vel.x;
+    vel.x += mx * h;
+    vel.d += md * h;
+    spinCurve *= Math.exp(-SPIN_DECAY * h);
+  }
   pos.x += vel.x * h;
   pos.y += vel.y * h;
   pos.d += vel.d * h;
